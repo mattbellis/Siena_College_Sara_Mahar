@@ -3,11 +3,21 @@
 import random
 import numpy as np
 
+import sys
+
 #def random_generator(correct_answer,answer_range,number_of_answers):
 
-correct_answer=503
-answer_range=800
-number_of_answers=10
+correct_answer = 10.0
+if len(sys.argv)>1:
+    correct_answer = float(sys.argv[1])
+
+answer_range = 10*correct_answer
+if len(sys.argv)>2:
+    answer_range = float(sys.argv[2])
+
+number_of_answers = 10
+if len(sys.argv)>3:
+    number_of_answers = int(sys.argv[3])
 
 answers=1e9*np.ones(number_of_answers)
 
@@ -42,7 +52,7 @@ for num in range(1,number_of_answers):
 
               #print "checking the answers: %.4f with random number: %.4f" % (answers[check_index], rand_num)
               fraction_difference = (rand_num - answers[check_index])/answers[check_index]
-              within_tolerance = np.abs(fraction_difference)<0.05
+              within_tolerance = np.abs(fraction_difference)<0.01
               
 	      #print "This is the fraction difference: %.4f" %fraction_difference
               #print within_tolerance
@@ -58,5 +68,8 @@ for num in range(1,number_of_answers):
          #print answers
 
 answers.sort()
-rounded_answers = ['%.2f' % elem for elem in answers]
+rounded_answers = ['%.3f' % elem for elem in answers]
 print rounded_answers
+
+for a in rounded_answers:
+    print a
