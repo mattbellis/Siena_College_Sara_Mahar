@@ -9,15 +9,18 @@ import time
 import seaborn as sns
 #%matplotlib  notebook
 
-nbkg = 1000
 sigmeans = [5.0,7.0]
 bkglos = [3.5,5]
 bkghis = [6,9]
-num_bootstrapping_samples=1000
 probability_background=.1 #This is found by using the volume of the sample. (2.5*4*h=1 and solve for h)
 
 
-def calc_pull(iterations, nsig, nMC_sig, nMC_bkg, sigwidths, nneigh=None, rad=None):
+
+
+def calc_pull(iterations, nsig, nbkg, nMC_sig, nMC_bkg, sigwidths, nneigh=None, rad=None,tag="default"):
+    outfile_name='frac_values_%s_sig%d_bkg%d_MCsig%d_MCbkg%d_bs%d_nn%d.dat'%(tag,nsig,nbkg,nMC_sig,nMC_bkg,0,nneigh)
+    outfile=open(outfile_name,'w')
+    print 'writing out to file %s' %outfile_name
     
     pull_frac_list=[]
     average_best_frac = 0
@@ -63,8 +66,99 @@ def calc_pull(iterations, nsig, nMC_sig, nMC_bkg, sigwidths, nneigh=None, rad=No
             fit_frac_uncert.append(err["frac"])
             pull_frac=(frac_org-param["frac"])/err["frac"]
             pull_frac_list.append(pull_frac)
+        output="%f %f %f %d %d %d %d %d %d %d %d\n" % (frac_org,param["frac"],err["frac"], nsig,nsig_iteration,nbkg,nbkg_iteration,nMC_sig,nMC_bkg,0,nneigh)
+        outfile.write(output)
+    outfile.close()
             
-    return pull_frac_list, frac, fit_frac, fit_frac_uncert,iterations
+    return pull_frac_list, frac, fit_frac, fit_frac_uncert,iterations,outfile
+
+
+
+
+
+
+
+#Calulates the pulls for the mean and std.
+def calc_pull_w_bootstrapping(pull_iterations, nsig, nbkg,nMC_sig, nMC_bkg, num_bootstrapping_samples,  nneigh,sigwidths, tag="default"):
+    outfile_name='frac_values_%s_sig%d_bkg%d_MCsig%d_MCbkg%d_bs%d_nn%d.dat'%(tag,nsig,nbkg,nMC_sig,nMC_bkg,num_bootstrapping_samples,nneigh)
+    outfile=open(outfile_name,'w')
+    print 'writing out to file %s' %outfile_name
+    
+    pull_frac_list=[]
+    average_best_frac = 0
+    frac = []
+    fit_frac = []
+    fit_frac_uncert = []
+    frac_org = nsig/float(nsig+nbkg)
+
+    for num in range(pull_iterations):
+        
+        # Generate the data for this pull iteration
+        nsig_iteration = np.random.poisson(nsig)
+        nbkg_iteration = np.random.poisson(nbkg)
+        data = gen_sig_and_bkg([nsig_iteration,nbkg_iteration],sigmeans,sigwidths,bkglos,bkghis)
+
+        # Record the original amount of signal and background data
+        frac_iteration = float(nsig_iteration)/(float(nbkg_iteration+nsig_iteration))
+        frac.append(frac_iteration)
+                
+        # Generate the MC we will use to try to fit the data we just generated!
+        signal_points= signal_2D(nMC_sig,sigmeans,sigwidths)
+        background_points = background_2D(nMC_bkg,bkglos,bkghis)
+
+        # Calculate the signal and background prob with original MC samples
+        signal_prob=nn(data,signal_points, nneighbors=nneigh)
+        background_prob = nn(data,background_points, nneighbors=nneigh)        
+
+        # Generate MC bootstrap samples and calculate the probs for each
+        signal_MC_bs = []
+        background_MC_bs = []
+
+        signal_probs_bs = []
+        background_probs_bs = []
+        for i in range(0,num_bootstrapping_samples):
+            signal_MC_bs.append(bootstrapping(signal_points))
+            background_MC_bs.append(bootstrapping(background_points))
+
+            signal_probs_bs.append(nn(data,signal_MC_bs[i], nneighbors=nneigh))
+            background_probs_bs.append(nn(data,background_MC_bs[i], nneighbors=nneigh))        
+
+        
+        def tot_prob(frac,sig,bkg):
+            tot_prob = frac*sig/nMC_sig + ((1-frac)*bkg/nMC_bkg)            
+            return tot_prob
+        
+        def negative_log_likelihood(frac):
+            
+            # First, use the original MC/probs to calculate the NLL
+            prob=tot_prob(frac,signal_prob,background_prob)
+            nll =  -np.log(prob[prob>0]).sum()
+            
+            # Then add in the prob/NLLs for the bootstrap samples
+            for i in range(0,num_bootstrapping_samples):
+                prob = tot_prob(frac,signal_probs_bs[i],background_probs_bs[i])
+                nll +=  -np.log(prob[prob>0]).sum()
+            return nll
+        
+        m1=Minuit(negative_log_likelihood,frac= 0.2,limit_frac=(0.001,1),error_frac=0.001,errordef =(num_bootstrapping_samples+1)*0.5,print_level=0)
+        m1.migrad()
+
+        if (m1.get_fmin().is_valid):
+            param=m1.values
+            err=m1.errors
+            fit_frac.append(param["frac"])
+            fit_frac_uncert.append(err["frac"])
+            pull_frac=(frac_org-param["frac"])/err["frac"]
+            pull_frac_list.append(pull_frac)
+            
+        output="%f %f %f %d %d %d %d %d %d\n" % (frac_org,param["frac"],err["frac"], nsig,n_sig_iteration,nbkg,nbkg_iteration,nMC_sig,nMC_bkg,num_bootstrapping_samples,nneigh)
+        outfile.write(output)
+    outfile.close()
+    return pull_frac_list, frac, fit_frac, fit_frac_uncert,pull_iterations,outfile
+
+
+
+
 
 
 def calc_pull_varying_MC(iterations, nsig, nMC_sig, nMC_bkg, nneigh,sigwidths):
@@ -112,6 +206,14 @@ def calc_pull_varying_MC(iterations, nsig, nMC_sig, nMC_bkg, nneigh,sigwidths):
             pull_frac_list.append(pull_frac)
             
     return pull_frac_list, frac, fit_frac, fit_frac_uncert,iterations
+
+
+
+
+#Calculate the mean and std of frac pulls
+def calc_mean_std_of_pulls(values):
+    pulls=(values[0]-values[1])/values[2]
+    return (np.mean(pulls),np.std(pulls))
 
 
 
@@ -235,77 +337,6 @@ def nncdist(data0,data1,r=None,nneighbors=None):
 
 
 
-#Calulates the pulls for the mean and std.
-def calc_pull_w_bootstrapping(pull_iterations, nsig, nMC_sig, nMC_bkg, nneigh,sigwidths):
-    
-    pull_frac_list=[]
-    average_best_frac = 0
-    frac = []
-    fit_frac = []
-    fit_frac_uncert = []
-    frac_org = nsig/float(nsig+nbkg)
-
-    for num in range(pull_iterations):
-        
-        # Generate the data for this pull iteration
-        nsig_iteration = np.random.poisson(nsig)
-        nbkg_iteration = np.random.poisson(nbkg)
-        data = gen_sig_and_bkg([nsig_iteration,nbkg_iteration],sigmeans,sigwidths,bkglos,bkghis)
-
-        # Record the original amount of signal and background data
-        frac_iteration = float(nsig_iteration)/(float(nbkg_iteration+nsig_iteration))
-        frac.append(frac_iteration)
-                
-        # Generate the MC we will use to try to fit the data we just generated!
-        signal_points= signal_2D(nMC_sig,sigmeans,sigwidths)
-        background_points = background_2D(nMC_bkg,bkglos,bkghis)
-
-        # Calculate the signal and background prob with original MC samples
-        signal_prob=nn(data,signal_points, nneighbors=nneigh)
-        background_prob = nn(data,background_points, nneighbors=nneigh)        
-
-        # Generate MC bootstrap samples and calculate the probs for each
-        signal_MC_bs = []
-        background_MC_bs = []
-
-        signal_probs_bs = []
-        background_probs_bs = []
-        for i in range(0,num_bootstrapping_samples):
-            signal_MC_bs.append(bootstrapping(signal_points))
-            background_MC_bs.append(bootstrapping(background_points))
-
-            signal_probs_bs.append(nn(data,signal_MC_bs[i], nneighbors=nneigh))
-            background_probs_bs.append(nn(data,background_MC_bs[i], nneighbors=nneigh))        
-
-        
-        def tot_prob(frac,sig,bkg):
-            tot_prob = frac*sig/nMC_sig + ((1-frac)*bkg/nMC_bkg)            
-            return tot_prob
-        
-        def negative_log_likelihood(frac):
-            
-            # First, use the original MC/probs to calculate the NLL
-            prob=tot_prob(frac,signal_prob,background_prob)
-            nll =  -np.log(prob[prob>0]).sum()
-            
-            # Then add in the prob/NLLs for the bootstrap samples
-            for i in range(0,num_bootstrapping_samples):
-                prob = tot_prob(frac,signal_probs_bs[i],background_probs_bs[i])
-                nll +=  -np.log(prob[prob>0]).sum()
-            return nll
-        
-        m1=Minuit(negative_log_likelihood,frac= 0.2,limit_frac=(0.001,1),error_frac=0.001,errordef =(num_bootstrapping_samples+1)*0.5,print_level=0)
-        m1.migrad()
-
-        if (m1.get_fmin().is_valid):
-            param=m1.values
-            err=m1.errors
-            fit_frac.append(param["frac"])
-            fit_frac_uncert.append(err["frac"])
-            pull_frac=(frac_org-param["frac"])/err["frac"]
-            pull_frac_list.append(pull_frac)
-            
-    return pull_frac_list, frac, fit_frac, fit_frac_uncert,pull_iterations
 
 
 
@@ -339,116 +370,117 @@ def plot_means_and_stds(which_plot, mean_or_std_list, width_list, MC_list):
 
     if which_plot=='mean':
         
-    for item in means1:
-        if item['width']==width_list[0]:
-            label='MC=' + str(item['MC_points']) + ' signal=' + str(item['signal'])
+        for item in means1:
+            if item['width']==width_list[0]:
+                label='MC=' + str(item['MC_points']) + ' signal=' + str(item['signal'])
         
     
-            if item['MC_points']== MC_list[0]:
-                color=colors[0]
-            #if item['MC_points']==MC_list[1]:
-            #    color=colors[1]
+                if item['MC_points']== MC_list[0]:
+                    color=colors[0]
+                #if item['MC_points']==MC_list[1]:
+                #    color=colors[1]
+
+                if item['signal']==sig_list[0]:
+                    marker=markers[0]
+                #if item['signal']==sig_list[1]:
+                #    marker=markers[1]
+                for x in labels:
+                    if label==x:
+                        label=""       
+                plt.plot(item['nearest neighbors'],item['mean pulls'], color=color, marker=marker,label=label)
+                labels.append(label)
+
+        plt.legend(loc='lower right')
+        plt.title("Means with widths of "+str(width_list[0]))
+           
+        plt.figure()
+        labels=[]
+           
+        for item in means1:
+            if item['width']==width_list[1]:
+                label='MC=' + str(item['MC_points']) +  ' signal=' + str(item['signal'])
+    
+                if item['MC_points']== MC_list[0]:
+                    color=colors[0]
+                #if item['MC_points']==MC_list[1]:
+                #    color=colors[1]
 
             if item['signal']==sig_list[0]:
                 marker=markers[0]
             #if item['signal']==sig_list[1]:
             #    marker=markers[1]
+
             for x in labels:
                 if label==x:
-                    label=""       
+                    label=""
+
             plt.plot(item['nearest neighbors'],item['mean pulls'], color=color, marker=marker,label=label)
             labels.append(label)
 
-    plt.legend(loc='lower right')
-    plt.title("Means with widths of "+str(width_list[0]))
-           
-    plt.figure()
-    labels=[]
-           
-    for item in means1:
-        if item['width']==width_list[1]:
-            label='MC=' + str(item['MC_points']) +  ' signal=' + str(item['signal'])
-    
-            if item['MC_points']== MC_list[0]:
-                color=colors[0]
-            #if item['MC_points']==MC_list[1]:
-            #    color=colors[1]
+        plt.legend(loc='lower right')    
 
-        if item['signal']==sig_list[0]:
-            marker=markers[0]
-        #if item['signal']==sig_list[1]:
-        #    marker=markers[1]
+        plt.title("Means with widths of "+str(width_list[1]))
+        
+    if which_plot=='std'
 
-        for x in labels:
-            if label==x:
-                label=""
-            
-        plt.plot(item['nearest neighbors'],item['mean pulls'], color=color, marker=marker,label=label)
-        labels.append(label)
+        plt.figure()
+        labels=[]
 
-plt.legend(loc='lower right')    
+        for item in stds1:
+            if item['width']==width_list[0]:
+                label='MC=' + str(item['MC_points']) +  ' signal=' + str(item['signal'])
 
-plt.title("Means with widths of "+str(width_list[1]))
+                if item['MC_points']== MC_list[0]:
+                    color=colors[0]
+                #if item['MC_points']==MC_list[1]:
+                #    color=colors[1]
 
+                if item['signal']==sig_list[0]:
+                    marker=markers[0]
+                #if item['signal']==sig_list[1]:
+                #    marker=markers[1]
 
-plt.figure()
-labels=[]
-           
-for item in stds1:
-    if item['width']==width_list[0]:
-        label='MC=' + str(item['MC_points']) +  ' signal=' + str(item['signal'])
-    
-        if item['MC_points']== MC_list[0]:
-            color=colors[0]
-        #if item['MC_points']==MC_list[1]:
-        #    color=colors[1]
+                for x in labels:
+                    if label==x:
+                        label=""
 
-        if item['signal']==sig_list[0]:
-            marker=markers[0]
-        #if item['signal']==sig_list[1]:
-        #    marker=markers[1]
+                plt.plot(item['nearest neighbors'],item['mean stds'], color=color, marker=marker,label=label)
+                labels.append(label)
 
-        for x in labels:
-            if label==x:
-                label=""
-            
-        plt.plot(item['nearest neighbors'],item['mean stds'], color=color, marker=marker,label=label)
-        labels.append(label)
+        plt.legend(loc='lower right')   
 
-plt.legend(loc='lower right')   
-
-plt.title("Standard Deviations with widths of "+str(width_list[0]))
+        plt.title("Standard Deviations with widths of "+str(width_list[0]))
 
 
 
 
-plt.figure()
-labels=[]
-           
-for item in stds1:
-    if item['width']==width_list[1]:
-        label='MC=' + str(item['MC_points']) +  ' signal=' + str(item['signal'])
-    
-        if item['MC_points']== MC_list[0]:
-            color=colors[0]
-        #if item['MC_points']==MC_list[1]:
-        #    color=colors[1]
+        plt.figure()
+        labels=[]
 
-        if item['signal']==sig_list[0]:
-            marker=markers[0]
-        #if item['signal']==sig_list[1]:
-        #    marker=markers[1]
+        for item in stds1:
+            if item['width']==width_list[1]:
+                label='MC=' + str(item['MC_points']) +  ' signal=' + str(item['signal'])
 
-        for x in labels:
-            if label==x:
-                label=""
-            
-        plt.plot(item['nearest neighbors'],item['mean stds'], color=color, marker=marker,label=label)
-        labels.append(label)
+                if item['MC_points']== MC_list[0]:
+                    color=colors[0]
+                #if item['MC_points']==MC_list[1]:
+                #    color=colors[1]
 
-plt.legend(loc='lower right')
+                if item['signal']==sig_list[0]:
+                    marker=markers[0]
+                #if item['signal']==sig_list[1]:
+                #    marker=markers[1]
 
-plt.title("Standard Deviations with widths of "+str(width_list[1]))
+                for x in labels:
+                    if label==x:
+                        label=""
+
+                plt.plot(item['nearest neighbors'],item['mean stds'], color=color, marker=marker,label=label)
+                labels.append(label)
+
+        plt.legend(loc='lower right')
+
+        plt.title("Standard Deviations with widths of "+str(width_list[1]))
 
 
 '''
@@ -510,6 +542,13 @@ def gen_sig_and_bkg(npts,means,sigmas,lovals,hivals):
     return data
 
 
+
+
+def assign_names(trial):
+    mean_name="mean_pulls" + str(trial)
+    std_name = "std_pulls" + str(trial)
+    uncertainty_name = "avg_uncertainty" + str(trial)
+    return mean_name, std_name, uncertainty_name
 
 
 #without cdist (pythagorean method) seems to be about 2/3 the time it takes to use cdist
