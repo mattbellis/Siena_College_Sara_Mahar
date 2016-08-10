@@ -9,6 +9,10 @@ import time
 import seaborn as sns
 #%matplotlib  notebook
 
+# For GPU stuff
+from numba import cuda
+import numba
+
 sigmeans = [5.0,7.0]
 bkglos = [3.5,5]
 bkghis = [6,9]
@@ -151,7 +155,7 @@ def calc_pull_w_bootstrapping(pull_iterations, nsig, nbkg,nMC_sig, nMC_bkg, num_
             pull_frac=(frac_org-param["frac"])/err["frac"]
             pull_frac_list.append(pull_frac)
             
-        output="%f %f %f %d %d %d %d %d %d\n" % (frac_org,param["frac"],err["frac"], nsig,n_sig_iteration,nbkg,nbkg_iteration,nMC_sig,nMC_bkg,num_bootstrapping_samples,nneigh)
+        output="%f %f %f %d %d %d %d %d %d %d %d\n" % (frac_org,param["frac"],err["frac"], nsig,nsig_iteration,nbkg,nbkg_iteration,nMC_sig,nMC_bkg,num_bootstrapping_samples,nneigh)
         outfile.write(output)
     outfile.close()
     return pull_frac_list, frac, fit_frac, fit_frac_uncert,pull_iterations,outfile
@@ -297,14 +301,12 @@ def nn(data0,data1,r=None,nneighbors=None):
             diffy=d[1]-data1[1]
             diff= diffx*diffx + diffy*diffy
             diff.sort()
+            print diff
             radius2 = diff[nneighbors-1]
             ret_list.append(float(nneighbors)/(np.pi*radius2)) # Let's do the inverse of the radius squared, since this is a 2D problem.
-
         ret_list = np.array(ret_list)
         return ret_list
     return ret
-
-
 
 
 #This calculates the number of nearest neighbors using cdist function
@@ -333,6 +335,105 @@ def nncdist(data0,data1,r=None,nneighbors=None):
         return ret_list
     return ret
 
+'''
+@numba.cuda.jit("void(float64[:])")
+def bubblesort_jit(X):
+    N = len(X)
+    for end in range(N, 1, -1):
+        for i in range(end - 1):
+            cur = X[i]
+            if cur > X[i + 1]:
+                tmp = X[i]
+                X[i] = X[i + 1]
+                X[i + 1] = tmp
+
+'''
+
+'''
+
+@numba.cuda.jit("void(float64[:],float64[:],float64[:],float64[:],float64[:])")
+def nn_kernel_GPU(data0_x, data0_y, data1_x, data1_y, data_out):
+    
+    tx = cuda.threadIdx.x #number of threads per block
+    bx = cuda.blockIdx.x #number of blocks
+    bw = cuda.blockDim.x # Block dimension/width to assign the index when there is more than 1 block
+    
+    idx = bw*bx + tx
+    
+    if idx>= data_out.size:
+        return
+    #d0x=data0_x[idx]
+    #d0y=data0_y[idx]
+    
+    a0x = data0_x[idx]
+    a0y = data0_y[idx]
+
+    narr_b = len(data0_x)
+        
+
+    for j in xrange(narr_b):
+        diffx = a0x - data1_x[j]
+        diffy = a0y - data1_y[j]
+
+        distance = math.sqrt(diffx * diffx + diffy * diffy)
+
+    
+    
+    for i in xrange(len(data0_x)):
+    
+        diff_x = d0x-data1_x[idx]
+        diff_y = d0y-data1_y[idx]
+        diff=diff_x*diff_x + diff_y*diff_y
+    
+        data_out[idx]=diff
+        
+'''
+
+
+def nn_GPU(data_set0,data_set1, nneigh):
+    my_gpu= numba.cuda.get_current_device()
+    thread_ct = my_gpu.WARP_SIZE
+    block_ct = int(math.ceil(float(data_size) / thread_ct))
+    frac_nn_GPU = -999*np.ones(len(data))
+    nn_kernel_GPU[block_ct, thread_ct](np.float32(data_set0[0]), np.float32(data_set0[1]), np.float32(data_set1[0]), np.float32(data_set1[1]), frac_nn_GPU, nneigh)
+    return frac_nn_GPU
+    
+
+
+
+##################################################
+# GPU testing
+##################################################
+@numba.cuda.jit("void(float32[:],float32[:],float32[:],float32[:],float32[:],float32)")
+def number_of_nearest_neighbors_GPU(arr_ax, arr_ay, arr_bx, arr_by, arr_out, radius):
+    tx = cuda.threadIdx.x
+    bx = cuda.blockIdx.x
+    bw = cuda.blockDim.x
+    i = tx + bx * bw
+
+    # Make sure we don't calculate the thread count that is bigger than the array.
+    if i>= arr_out.size:
+        return
+
+    a0x = arr_ax[i]
+    a0y = arr_ay[i]
+
+    narr_b = len(arr_bx)
+    
+    for j in xrange(narr_b):
+        diffx = a0x - arr_bx[j]
+        diffy = a0y - arr_by[j]
+
+        distance = math.sqrt(diffx * diffx + diffy * diffy)
+
+        #
+        arr_out[i]=distance*5
+
+
+
+
+
+
 
 
 
@@ -356,7 +457,7 @@ def plot_data():
     data1 = np.array(data1)
     sns.jointplot(data1[0],data1[1],kind='hex')
 
-    
+
     
 '''
 #NEED TO FIXXXXXX
@@ -599,3 +700,40 @@ def calc_pull_compare_cdist(iterations, nsig, nMC_sig, nMC_bkg, rad,cdist_bool,s
             pull_frac_list.append(pull_frac)
             
     return pull_frac_list, frac, fit_frac, fit_frac_uncert,iterations
+
+
+
+
+##################################################
+# GPU testing
+##################################################
+@numba.cuda.jit("void(float32[:],float32[:],float32[:],float32[:],float32[:],float32)")
+def number_of_nearest_neighbors_GPU(arr_ax, arr_ay, arr_bx, arr_by, arr_out, radius):
+    tx = cuda.threadIdx.x
+    bx = cuda.blockIdx.x
+    bw = cuda.blockDim.x
+    i = tx + bx * bw
+
+    # Make sure we don't calculate the thread count that is bigger than the array.
+    if i>= arr_out.size:
+        return
+
+    a0x = arr_ax[i]
+    a0y = arr_ay[i]
+
+    narr_b = len(arr_bx)
+    
+    for j in xrange(narr_b):
+        diffx = a0x - arr_bx[j]
+        diffy = a0y - arr_by[j]
+
+        distance = math.sqrt(diffx * diffx + diffy * diffy)
+
+        # Keep track of how many points are within our radius.
+        if distance<=radius:
+            arr_out[i] += 1
+
+    # Normalize to the number of points.
+    arr_out[i] /= narr_b
+    # Alternate normalization.
+    #arr_out[i] /= (k*narr_b)
