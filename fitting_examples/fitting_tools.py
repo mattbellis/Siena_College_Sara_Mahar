@@ -164,9 +164,10 @@ def calc_pull_w_bootstrapping(pull_iterations, nsig, nbkg,nMC_sig, nMC_bkg, num_
 
 
 
-
-
-def calc_pull_varying_MC(iterations, nsig, nMC_sig, nMC_bkg, nneigh,sigwidths):
+def calc_pull_GPU(iterations, nsig, nbkg, nMC_sig, nMC_bkg, sigwidths, nneigh=None, rad=None,tag="default"):
+    outfile_name='frac_values_%s_sig%d_bkg%d_MCsig%d_MCbkg%d_bs%d_nn%d.dat'%(tag,nsig,nbkg,nMC_sig,nMC_bkg,0,nneigh)
+    outfile=open(outfile_name,'w')
+    print 'writing out to file %s' %outfile_name
     
     pull_frac_list=[]
     average_best_frac = 0
@@ -174,25 +175,46 @@ def calc_pull_varying_MC(iterations, nsig, nMC_sig, nMC_bkg, nneigh,sigwidths):
     fit_frac = []
     fit_frac_uncert = []
     frac_org = nsig/float(nsig+nbkg)
+    
+    my_gpu = numba.cuda.get_current_device()
+    thread_ct = my_gpu.WARP_SIZE
 
     for num in range(iterations):
         
         nsig_iteration = np.random.poisson(nsig)
         nbkg_iteration = np.random.poisson(nbkg)
         data = gen_sig_and_bkg([nsig_iteration,nbkg_iteration],sigmeans,sigwidths,bkglos,bkghis)
-        
         signal_points= signal_2D(nMC_sig,sigmeans,sigwidths)
         background_points = background_2D(nMC_bkg,bkglos,bkghis)
         frac_iteration = float(nsig_iteration)/(float(nbkg_iteration+nsig_iteration))
         frac.append(frac_iteration)
         
-        #uses nn to find the signal and background probability
-        signal_prob=nn(data,signal_points, nneighbors=nneigh)
-        background_prob = nn(data,background_points, nneighbors=nneigh)
+        #Block count and setting up arrays for distances between data points and background MC and 
+        #data points and signal MC
+        block_ct_sig = int(math.ceil(float(nMC_sig*(nsig_iteration+nbkg_iteration)) / thread_ct))
+        block_ct_bkg = int(math.ceil(float(nMC_bkg*(nsig_iteration+nbkg_iteration)) / thread_ct))
+        signal_distances_GPU = np.zeros((nsig_iteration+nbkg_iteration)*nMC_sig, dtype = np.float32)
+        background_distances_GPU = np.zeros((nsig_iteration+nbkg_iteration)*nMC_bkg, dtype = np.float32)
+        
+        
+        
+        if nneigh is not None:
+            signal_distances=distances_GPU[block_ct_sig, thread_ct](np.float32(data[0]), np.float32(data[1]), len(data[1]), np.float32(signal_points[0]), np.float32(signal_points[1]),len(signal_points[1]), signal_distances_GPU)
+            
+            background_distances=distances_GPU[block_ct_bkg, thread_ct](np.float32(data[0]), np.float32(data[1]), len(data[1]), np.float32(background_points[0]), np.float32(background_points[1]),len(background_points[1]), background_distances_GPU)
+           
+            
+            signal_prob=sort_GPU((nsig_iteration+nbkg_iteration),nMC_sig,signal_distances_GPU,nneigh)
+            background_prob=sort_GPU((nsig_iteration+nbkg_iteration),nMC_bkg,background_distances_GPU,nneigh)
+            
+        else:
+            signal_prob=nn(data,signal_points, r=rad)
+            background_prob = nn(data,background_points, r=rad)
+            print "calculating nn with radius"
 
         def tot_prob(frac):
             tot_prob=[]
-            tot_prob.append(frac*signal_prob/(nMC_sig) + ((1-frac)*background_prob)/(nMC_bkg))
+            tot_prob.append((frac*signal_prob)/nMC_sig + ((1-frac)*background_prob/nMC_bkg))
             return np.array(tot_prob)
         
         def probability(frac):
@@ -209,8 +231,157 @@ def calc_pull_varying_MC(iterations, nsig, nMC_sig, nMC_bkg, nneigh,sigwidths):
             fit_frac_uncert.append(err["frac"])
             pull_frac=(frac_org-param["frac"])/err["frac"]
             pull_frac_list.append(pull_frac)
+        output="%f %f %f %d %d %d %d %d %d %d %d\n" % (frac_org,param["frac"],err["frac"], nsig,nsig_iteration,nbkg,nbkg_iteration,nMC_sig,nMC_bkg,0,nneigh)
+        outfile.write(output)
+    outfile.close()
             
-    return pull_frac_list, frac, fit_frac, fit_frac_uncert,iterations
+    return pull_frac_list, frac, fit_frac, fit_frac_uncert,iterations,outfile
+
+
+
+
+
+
+
+#Calulates the pulls for the mean and std.
+def calc_pull_w_bootstrapping_GPU(pull_iterations, nsig, nbkg,nMC_sig, nMC_bkg, num_bootstrapping_samples,  nneigh,sigwidths, tag="default"):
+    outfile_name='frac_values_%s_sig%d_bkg%d_MCsig%d_MCbkg%d_bs%d_nn%d.dat'%(tag,nsig,nbkg,nMC_sig,nMC_bkg,num_bootstrapping_samples,nneigh)
+    outfile=open(outfile_name,'w')
+    print 'writing out to file %s' %outfile_name
+    
+    pull_frac_list=[]
+    average_best_frac = 0
+    frac = []
+    fit_frac = []
+    fit_frac_uncert = []
+    frac_org = nsig/float(nsig+nbkg)
+    my_gpu = numba.cuda.get_current_device()
+    thread_ct = my_gpu.WARP_SIZE
+
+    for num in range(pull_iterations):        
+        # Generate the data for this pull iteration
+        nsig_iteration = np.random.poisson(nsig)
+        nbkg_iteration = np.random.poisson(nbkg)
+        data = gen_sig_and_bkg([nsig_iteration,nbkg_iteration],sigmeans,sigwidths,bkglos,bkghis)
+
+        # Record the original amount of signal and background data
+        frac_iteration = float(nsig_iteration)/(float(nbkg_iteration+nsig_iteration))
+        frac.append(frac_iteration)
+                
+        # Generate the MC we will use to try to fit the data we just generated!
+        signal_points= signal_2D(nMC_sig,sigmeans,sigwidths)
+        background_points = background_2D(nMC_bkg,bkglos,bkghis)
+
+        # Calculate the signal and background prob with original MC samples
+        #Block count and setting up arrays for distances between data points and background MC and 
+        #data points and signal MC
+        block_ct_sig = int(math.ceil(float(nMC_sig*(nsig_iteration+nbkg_iteration)) / thread_ct))
+        block_ct_bkg = int(math.ceil(float(nMC_bkg*(nsig_iteration+nbkg_iteration)) / thread_ct))
+        
+        signal_distances_GPU = np.zeros((nsig_iteration+nbkg_iteration)*nMC_sig, dtype = np.float32)
+        background_distances_GPU = np.zeros((nsig_iteration+nbkg_iteration)*nMC_bkg, dtype = np.float32)
+        
+        signal_distances=distances_GPU[block_ct_sig, thread_ct](np.float32(data[0]), np.float32(data[1]), len(data[1]), np.float32(signal_points[0]), np.float32(signal_points[1]),len(signal_points[1]), signal_distances_GPU)
+            
+        background_distances=distances_GPU[block_ct_bkg, thread_ct](np.float32(data[0]), np.float32(data[1]), len(data[1]), np.float32(background_points[0]), np.float32(background_points[1]),len(background_points[1]), background_distances_GPU)
+           
+            
+        signal_prob=sort_GPU((nsig_iteration+nbkg_iteration),nMC_sig,signal_distances_GPU,nneigh)
+        background_prob=sort_GPU((nsig_iteration+nbkg_iteration),nMC_bkg,background_distances_GPU,nneigh)
+     
+
+        # Generate MC bootstrap samples and calculate the probs for each
+        signal_MC_bs = []
+        background_MC_bs = []
+      
+        
+
+        signal_prob_bs = []
+        background_prob_bs = []
+        for i in range(0,num_bootstrapping_samples):
+            
+            #signal_probs_bs.append(nn(data,signal_MC_bs[i], nneighbors=nneigh))
+            #background_probs_bs.append(nn(data,background_MC_bs[i], nneighbors=nneigh))   
+            
+            signal_distances_GPU = np.zeros((nsig_iteration+nbkg_iteration)*nMC_sig, dtype = np.float32)
+            background_distances_GPU = np.zeros((nsig_iteration+nbkg_iteration)*nMC_bkg, dtype = np.float32)
+            signal_MC_bs=np.append(bootstrapping(signal_points),i)
+            background_MC_bs=np.append(bootstrapping(background_points),i)
+            signal_MC_bs=signal_MC_bs[i]
+            background_MC_bs=background_MC_bs[i]
+            
+            #print signal_MC_bs
+            #print data[0]
+            #calculating distances for each point
+            signal_distances=distances_GPU[block_ct_sig, thread_ct](np.float32(data[0]), np.float32(data[1]), len(data[1]), np.float32(signal_points[0]), np.float32(signal_points[1]),len(signal_points[1]), signal_distances_GPU)
+            
+            background_distances=distances_GPU[block_ct_bkg, thread_ct](np.float32(data[0]), np.float32(data[1]), len(data[1]), np.float32(background_points[0]), np.float32(background_points[1]),len(background_points[1]), background_distances_GPU)
+            
+            signal_prob_bs.append(sort_GPU((nsig_iteration+nbkg_iteration),nMC_sig,signal_distances_GPU,nneigh))
+            background_prob_bs.append(sort_GPU((nsig_iteration+nbkg_iteration),nMC_bkg,background_distances_GPU,nneigh))
+            
+            
+            '''
+            def bootstrapping(data):
+    npts = len(data[0])
+    indices = np.random.randint(0,npts,npts)
+
+    bs_data= np.array([data[0][indices].copy(),data[1][indices].copy()])
+        
+    return bs_data
+    
+    
+    for i in range(0,num_bootstrapping_samples):
+            signal_MC_bs.append(bootstrapping(signal_points))
+            background_MC_bs.append(bootstrapping(background_points))
+
+            signal_probs_bs.append(nn(data,signal_MC_bs[i], nneighbors=nneigh))
+            background_probs_bs.append(nn(data,background_MC_bs[i], nneighbors=nneigh)) 
+            '''
+            
+            
+            background_distances=distances_GPU[block_ct_bkg, thread_ct](np.float32(data[0]), np.float32(data[1]), len(data[1]), np.float32(background_points[0]), np.float32(background_points[1]),len(background_points[1]), background_distances_GPU)
+           
+            
+            signal_prob=sort_GPU((nsig_iteration+nbkg_iteration),nMC_sig,signal_distances_GPU,nneigh)
+            background_prob=sort_GPU((nsig_iteration+nbkg_iteration),nMC_bkg,background_distances_GPU,nneigh)
+
+        
+        def tot_prob(frac,sig,bkg):
+            tot_prob = frac*sig/nMC_sig + ((1-frac)*bkg/nMC_bkg)            
+            return tot_prob
+        
+        def negative_log_likelihood(frac):
+            
+            # First, use the original MC/probs to calculate the NLL
+            prob=tot_prob(frac,signal_prob,background_prob)
+            nll =  -np.log(prob[prob>0]).sum()
+            
+            # Then add in the prob/NLLs for the bootstrap samples
+            for i in range(0,num_bootstrapping_samples):
+                prob = tot_prob(frac,signal_prob_bs[i],background_prob_bs[i])
+                nll +=  -np.log(prob[prob>0]).sum()
+            return nll
+        
+        m1=Minuit(negative_log_likelihood,frac= 0.2,limit_frac=(0.001,1),error_frac=0.001,errordef =(num_bootstrapping_samples+1)*0.5,print_level=0)
+        m1.migrad()
+
+        if (m1.get_fmin().is_valid):
+            param=m1.values
+            err=m1.errors
+            fit_frac.append(param["frac"])
+            fit_frac_uncert.append(err["frac"])
+            pull_frac=(frac_org-param["frac"])/err["frac"]
+            pull_frac_list.append(pull_frac)
+            
+        output="%f %f %f %d %d %d %d %d %d %d %d\n" % (frac_org,param["frac"],err["frac"], nsig,nsig_iteration,nbkg,nbkg_iteration,nMC_sig,nMC_bkg,num_bootstrapping_samples,nneigh)
+        outfile.write(output)
+    outfile.close()
+    return pull_frac_list, frac, fit_frac, fit_frac_uncert,pull_iterations,outfile
+
+
+
+
 
 
 
@@ -305,7 +476,7 @@ def nn(data0,data1,r=None,nneighbors=None):
             radius2 = diff[nneighbors-1]
             ret_list.append(float(nneighbors)/(np.pi*radius2)) # Let's do the inverse of the radius squared, since this is a 2D problem.
         ret_list = np.array(ret_list)
-        print ret_list
+        #print ret_list
         return ret_list
     
     return ret
@@ -340,60 +511,6 @@ def nncdist(data0,data1,r=None,nneighbors=None):
         return ret_list
     return ret
 
-'''
-@numba.cuda.jit("void(float64[:])")
-def bubblesort_jit(X):
-    N = len(X)
-    for end in range(N, 1, -1):
-        for i in range(end - 1):
-            cur = X[i]
-            if cur > X[i + 1]:
-                tmp = X[i]
-                X[i] = X[i + 1]
-                X[i + 1] = tmp
-
-'''
-
-'''
-
-@numba.cuda.jit("void(float64[:],float64[:],float64[:],float64[:],float64[:])")
-def nn_kernel_GPU(data0_x, data0_y, data1_x, data1_y, data_out):
-    
-    tx = cuda.threadIdx.x #number of threads per block
-    bx = cuda.blockIdx.x #number of blocks
-    bw = cuda.blockDim.x # Block dimension/width to assign the index when there is more than 1 block
-    
-    idx = bw*bx + tx
-    
-    if idx>= data_out.size:
-        return
-    #d0x=data0_x[idx]
-    #d0y=data0_y[idx]
-    
-    a0x = data0_x[idx]
-    a0y = data0_y[idx]
-
-    narr_b = len(data0_x)
-        
-
-    for j in xrange(narr_b):
-        diffx = a0x - data1_x[j]
-        diffy = a0y - data1_y[j]
-
-        distance = math.sqrt(diffx * diffx + diffy * diffy)
-
-    
-    
-    for i in xrange(len(data0_x)):
-    
-        diff_x = d0x-data1_x[idx]
-        diff_y = d0y-data1_y[idx]
-        diff=diff_x*diff_x + diff_y*diff_y
-    
-        data_out[idx]=diff
-        
-'''
-
 
 def nn_GPU(data_set0,data_set1, nneigh):
     my_gpu= numba.cuda.get_current_device()
@@ -410,7 +527,7 @@ def nn_GPU(data_set0,data_set1, nneigh):
 # GPU testing
 ##################################################
 @numba.cuda.jit("void(float32[:],float32[:],uint32,float32[:],float32[:],uint32,float32[:])") #,float32)")
-def number_of_nearest_neighbors_GPU(arr_ax, arr_ay, narr_a, arr_bx, arr_by, narr_b, arr_out):  #, nneigh):
+def distances_GPU(arr_ax, arr_ay, narr_a, arr_bx, arr_by, narr_b, arr_out):  #, nneigh):
     tx = cuda.threadIdx.x
     bx = cuda.blockIdx.x
     bw = cuda.blockDim.x
@@ -445,70 +562,11 @@ def sort_GPU(ndata,nMC,in_arr,nneigh):
     
     
     segsort = csort.segmented_sort(array,index,x)
+    #csort.segmented_sort(array,index,x)
     radius2=float(nneigh)/(np.pi*(array[nneigh+x-1]))
-    return radius2,array,x
+    return radius2
 
 
-
-
-
-
-
-
-        
-##################################################
-# GPU testing with 2D blocks
-##################################################
-@numba.cuda.jit("void(float32[:],float32[:],uint32,float32[:],float32[:],uint32,float32[:])") #,float32)")
-def distances_GPU(arr_ax, arr_ay, narr_a, arr_bx, arr_by, narr_b, arr_out):  #, nneigh):
-    tx = cuda.threadIdx.x
-    bx = cuda.blockIdx.x
-    bw = cuda.blockDim.x
-    by = cuda.blockDim.y
-    
-    
-    i = tx  +  bx*bw      #The specific index of the thread 
-    #j = tx  +  by*bw
-
-    a0x = arr_ax[bx] #The x value for each thread and data set 1
-    a0y = arr_ay[bx] #The y value for each thread and data set 1
-    b0x =  arr_bx[tx]
-    b0y = arr_by[tx]
-    diff=(a0x-b0x)*(a0x-b0x) + (a0y-b0y)*(a0y-b0y)
-    
-    arr_out[i] = diff        
-        
-
-
-    '''
-    
-    for j in xrange(narr_b):
-        
-        
-        
-        diffx = a0x - arr_bx[j]
-        diffy = a0y - arr_by[j]
-
-        distance.append(math.sqrt(diffx * diffx + diffy * diffy))
-    #distance=np.array(distance)
-    distance.sort()
-    radius2=distance[nneigh-1]
-        
-    arr_out[i]=float(nneigh)/(np.pi*radius2)
-    
-    '''
-
-'''
-
-diffx=d[0]-data1[0]
-            diffy=d[1]-data1[1]
-            diff= diffx*diffx + diffy*diffy
-            diff.sort()
-            radius2 = diff[nneighbors-1]
-            ret_list.append(float(nneighbors)/(np.pi*radius2)) # Let's do the inverse of the radius squared, since this is a 2D problem.
-        ret_list = np.array(ret_list)
-
-'''
 
 
 
