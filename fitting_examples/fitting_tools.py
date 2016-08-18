@@ -88,6 +88,7 @@ def calc_pull_w_bootstrapping(pull_iterations, nsig, nbkg,nMC_sig, nMC_bkg, num_
     outfile_name='frac_values_%s_sig%d_bkg%d_MCsig%d_MCbkg%d_bs%d_nn%d.dat'%(tag,nsig,nbkg,nMC_sig,nMC_bkg,num_bootstrapping_samples,nneigh)
     outfile=open(outfile_name,'w')
     print 'writing out to file %s' %outfile_name
+
     
     pull_frac_list=[]
     average_best_frac = 0
@@ -127,7 +128,6 @@ def calc_pull_w_bootstrapping(pull_iterations, nsig, nbkg,nMC_sig, nMC_bkg, num_
 
             signal_probs_bs.append(nn(data,signal_MC_bs[i], nneighbors=nneigh))
             background_probs_bs.append(nn(data,background_MC_bs[i], nneighbors=nneigh))        
-
         
         def tot_prob(frac,sig,bkg):
             tot_prob = frac*sig/nMC_sig + ((1-frac)*bkg/nMC_bkg)            
@@ -272,21 +272,21 @@ def calc_pull_w_bootstrapping_GPU(pull_iterations, nsig, nbkg,nMC_sig, nMC_bkg, 
         signal_points= signal_2D(nMC_sig,sigmeans,sigwidths)
         background_points = background_2D(nMC_bkg,bkglos,bkghis)
 
-        # Calculate the signal and background prob with original MC samples
-        #Block count and setting up arrays for distances between data points and background MC and 
-        #data points and signal MC
+        #Block count
         block_ct_sig = int(math.ceil(float(nMC_sig*(nsig_iteration+nbkg_iteration)) / thread_ct))
         block_ct_bkg = int(math.ceil(float(nMC_bkg*(nsig_iteration+nbkg_iteration)) / thread_ct))
         
+        #setting up arrays for distances between data points and background MC and data points and signal MC
         signal_distances_GPU = np.zeros((nsig_iteration+nbkg_iteration)*nMC_sig, dtype = np.float32)
         background_distances_GPU = np.zeros((nsig_iteration+nbkg_iteration)*nMC_bkg, dtype = np.float32)
         
+        #Calculating the distances between data points and MC
         signal_distances=distances_GPU[block_ct_sig, thread_ct](np.float32(data[0]), np.float32(data[1]), len(data[1]), np.float32(signal_points[0]), np.float32(signal_points[1]),len(signal_points[1]), signal_distances_GPU)
             
         background_distances=distances_GPU[block_ct_bkg, thread_ct](np.float32(data[0]), np.float32(data[1]), len(data[1]), np.float32(background_points[0]), np.float32(background_points[1]),len(background_points[1]), background_distances_GPU)
-           
-            
-        signal_prob=sort_GPU((nsig_iteration+nbkg_iteration),nMC_sig,signal_distances_GPU,nneigh)
+        
+        #sorting the distances
+        signal_prob=    sort_GPU((nsig_iteration+nbkg_iteration),nMC_sig,signal_distances_GPU,    nneigh)
         background_prob=sort_GPU((nsig_iteration+nbkg_iteration),nMC_bkg,background_distances_GPU,nneigh)
      
 
@@ -300,51 +300,29 @@ def calc_pull_w_bootstrapping_GPU(pull_iterations, nsig, nbkg,nMC_sig, nMC_bkg, 
         background_prob_bs = []
         for i in range(0,num_bootstrapping_samples):
             
-            #signal_probs_bs.append(nn(data,signal_MC_bs[i], nneighbors=nneigh))
-            #background_probs_bs.append(nn(data,background_MC_bs[i], nneighbors=nneigh))   
+            #Generating bootstrapping samples
+            signal_MC_bs.append(bootstrapping(signal_points))
+            background_MC_bs.append(bootstrapping(background_points))
             
             signal_distances_GPU = np.zeros((nsig_iteration+nbkg_iteration)*nMC_sig, dtype = np.float32)
             background_distances_GPU = np.zeros((nsig_iteration+nbkg_iteration)*nMC_bkg, dtype = np.float32)
-            signal_MC_bs=np.append(bootstrapping(signal_points),i)
-            background_MC_bs=np.append(bootstrapping(background_points),i)
-            signal_MC_bs=signal_MC_bs[i]
-            background_MC_bs=background_MC_bs[i]
-            
-            #print signal_MC_bs
-            #print data[0]
+
+
             #calculating distances for each point
-            signal_distances=distances_GPU[block_ct_sig, thread_ct](np.float32(data[0]), np.float32(data[1]), len(data[1]), np.float32(signal_points[0]), np.float32(signal_points[1]),len(signal_points[1]), signal_distances_GPU)
+            signal_distances=distances_GPU[block_ct_sig, thread_ct](np.float32(data[0]), np.float32(data[1]), len(data[1]), np.float32(signal_MC_bs[i][0]), np.float32(signal_MC_bs[i][1]),len(signal_MC_bs[i][1]), signal_distances_GPU)
             
-            background_distances=distances_GPU[block_ct_bkg, thread_ct](np.float32(data[0]), np.float32(data[1]), len(data[1]), np.float32(background_points[0]), np.float32(background_points[1]),len(background_points[1]), background_distances_GPU)
+            background_distances=distances_GPU[block_ct_bkg, thread_ct](np.float32(data[0]), np.float32(data[1]), len(data[1]), np.float32(background_MC_bs[i][0]), np.float32(background_MC_bs[i][1]),len(background_MC_bs[i][1]), background_distances_GPU)
             
+            #print signal_distances_GPU
+            #print background_distances_GPU
+            
+            #sorting distances
             signal_prob_bs.append(sort_GPU((nsig_iteration+nbkg_iteration),nMC_sig,signal_distances_GPU,nneigh))
             background_prob_bs.append(sort_GPU((nsig_iteration+nbkg_iteration),nMC_bkg,background_distances_GPU,nneigh))
             
-            
-            '''
-            def bootstrapping(data):
-    npts = len(data[0])
-    indices = np.random.randint(0,npts,npts)
-
-    bs_data= np.array([data[0][indices].copy(),data[1][indices].copy()])
-        
-    return bs_data
-    
-    
-    for i in range(0,num_bootstrapping_samples):
-            signal_MC_bs.append(bootstrapping(signal_points))
-            background_MC_bs.append(bootstrapping(background_points))
-
-            signal_probs_bs.append(nn(data,signal_MC_bs[i], nneighbors=nneigh))
-            background_probs_bs.append(nn(data,background_MC_bs[i], nneighbors=nneigh)) 
-            '''
-            
-            
-            background_distances=distances_GPU[block_ct_bkg, thread_ct](np.float32(data[0]), np.float32(data[1]), len(data[1]), np.float32(background_points[0]), np.float32(background_points[1]),len(background_points[1]), background_distances_GPU)
+            #print signal_prob_bs[i]
+            #print background_prob_bs[i]
            
-            
-            signal_prob=sort_GPU((nsig_iteration+nbkg_iteration),nMC_sig,signal_distances_GPU,nneigh)
-            background_prob=sort_GPU((nsig_iteration+nbkg_iteration),nMC_bkg,background_distances_GPU,nneigh)
 
         
         def tot_prob(frac,sig,bkg):
@@ -355,16 +333,21 @@ def calc_pull_w_bootstrapping_GPU(pull_iterations, nsig, nbkg,nMC_sig, nMC_bkg, 
             
             # First, use the original MC/probs to calculate the NLL
             prob=tot_prob(frac,signal_prob,background_prob)
+            #prob = np.float64(prob)
             nll =  -np.log(prob[prob>0]).sum()
             
             # Then add in the prob/NLLs for the bootstrap samples
             for i in range(0,num_bootstrapping_samples):
                 prob = tot_prob(frac,signal_prob_bs[i],background_prob_bs[i])
                 nll +=  -np.log(prob[prob>0]).sum()
+            #print nll
+            #print type(nll)
             return nll
         
         m1=Minuit(negative_log_likelihood,frac= 0.2,limit_frac=(0.001,1),error_frac=0.001,errordef =(num_bootstrapping_samples+1)*0.5,print_level=0)
+        #m1.tol = num_bootstrapping_samples
         m1.migrad()
+        #m1.hesse()
 
         if (m1.get_fmin().is_valid):
             param=m1.values
@@ -374,8 +357,9 @@ def calc_pull_w_bootstrapping_GPU(pull_iterations, nsig, nbkg,nMC_sig, nMC_bkg, 
             pull_frac=(frac_org-param["frac"])/err["frac"]
             pull_frac_list.append(pull_frac)
             
-        output="%f %f %f %d %d %d %d %d %d %d %d\n" % (frac_org,param["frac"],err["frac"], nsig,nsig_iteration,nbkg,nbkg_iteration,nMC_sig,nMC_bkg,num_bootstrapping_samples,nneigh)
-        outfile.write(output)
+            output="%f %f %f %d %d %d %d %d %d %d %d\n" % (frac_org,param["frac"],err["frac"], nsig,nsig_iteration,nbkg,nbkg_iteration,nMC_sig,nMC_bkg,num_bootstrapping_samples,nneigh)
+            #print output
+            outfile.write(output)
     outfile.close()
     return pull_frac_list, frac, fit_frac, fit_frac_uncert,pull_iterations,outfile
 
@@ -512,17 +496,6 @@ def nncdist(data0,data1,r=None,nneighbors=None):
     return ret
 
 
-def nn_GPU(data_set0,data_set1, nneigh):
-    my_gpu= numba.cuda.get_current_device()
-    thread_ct = my_gpu.WARP_SIZE
-    block_ct = int(math.ceil(float(data_size) / thread_ct))
-    frac_nn_GPU = -999*np.ones(len(data))
-    nn_kernel_GPU[block_ct, thread_ct](np.float32(data_set0[0]), np.float32(data_set0[1]), np.float32(data_set1[0]), np.float32(data_set1[1]), frac_nn_GPU, nneigh)
-    return frac_nn_GPU
-    
-
-
-
 ##################################################
 # GPU testing
 ##################################################
@@ -564,6 +537,7 @@ def sort_GPU(ndata,nMC,in_arr,nneigh):
     segsort = csort.segmented_sort(array,index,x)
     #csort.segmented_sort(array,index,x)
     radius2=float(nneigh)/(np.pi*(array[nneigh+x-1]))
+    radius2 = np.float64(radius2)
     return radius2
 
 
