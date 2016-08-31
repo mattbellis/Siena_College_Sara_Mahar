@@ -819,21 +819,22 @@ def calc_pull_1D_GPU_bootstrapping(iterations, nsig, nbkg, MC_sig, MC_bkg, num_b
         for i in range(0,num_bootstrapping_samples):
             
             #Generating bootstrapping samples
-            signal_MC_bs.append(bootstrapping(signal))
-            background_MC_bs.append(bootstrapping(background))
+            signal_MC_bs.append(bootstrapping(signal_compare))
+            background_MC_bs.append(bootstrapping(background_compare))
             
             signal_distances_GPU = np.zeros((nsig_iteration+nbkg_iteration)*MC_sig, dtype = np.float32)
             background_distances_GPU = np.zeros((nsig_iteration+nbkg_iteration)*MC_bkg, dtype = np.float32)
 
 
             #calculating distances for each point
-            signal_distances=distances_GPU_1D[block_ct_sig, thread_ct](np.float32(data), len(data), np.float32(signal_compare),len(signal_compare), signal_distances_GPU)
-            background_distances=distances_GPU_1D[block_ct_bkg, thread_ct](np.float32(data), len(data), np.float32(background_compare), len(background_compare), background_distances_GPU)
+            
+            signal_distances=distances_GPU_1D[block_ct_sig, thread_ct](np.float32(data), len(data), np.float32(signal_MC_bs[i]),len(signal_MC_bs[i]), signal_distances_GPU)
+            background_distances=distances_GPU_1D[block_ct_bkg, thread_ct](np.float32(data), len(data), np.float32(background_MC_bs[i]), len(background_MC_bs[i]), background_distances_GPU)
         
 
             
-            signal_prob_bs.append(sort_GPU((nsig_iteration+nbkg_iteration),MC_sig,  np.abs(signal_distances_GPU),nneigh))
-            background_prob_bs.append(sort_GPU((nsig_iteration+nbkg_iteration),MC_bkg, np.abs(background_distances_GPU),nneigh))
+            signal_prob_bs.append(sort_GPU_1D((nsig_iteration+nbkg_iteration),MC_sig,  np.abs(signal_distances_GPU),nneigh))
+            background_prob_bs.append(sort_GPU_1D((nsig_iteration+nbkg_iteration),MC_bkg, np.abs(background_distances_GPU),nneigh))
             
         
        
@@ -1065,10 +1066,10 @@ def calc_pull_main(iterations, nsig, nbkg, nMC_sig, nMC_bkg, num_bootstrapping_s
                 #print signal_MC_bs[i]
 
                 signal_distances=distances_GPU_1D[block_ct_sig, thread_ct](np.float32(data), len(data), np.float32(signal_MC_bs[i]),len(signal_MC_bs[i]), signal_distances_GPU)
-                background_distances=distances_GPU_1D[block_ct_bkg, thread_ct](np.float32(data), len(data), np.float32(background_MC), len(background_MC), background_distances_GPU)
+                background_distances=distances_GPU_1D[block_ct_bkg, thread_ct](np.float32(data), len(data), np.float32(background_MC_bs[i]), len(background_MC_bs[i]), background_distances_GPU)
                 signal_prob_bs.append(sort_GPU_1D((nsig_iteration+nbkg_iteration),nMC_sig, np.abs(signal_distances_GPU), nneigh))
                 background_prob_bs.append(sort_GPU_1D((nsig_iteration+nbkg_iteration),nMC_bkg, np.abs(background_distances_GPU), nneigh))
-            
+                #print signal_prob_bs
            
             
             else: 
