@@ -41,6 +41,46 @@ def bootstrapping(data):
 def normal(x,mean,width):
     return (1.0/(width*np.sqrt(2*np.pi)))*(np.exp(-(x-mean)**2/(2*(width**2))))
 
+##################################################################
+# Log normal stuff
+##################################################################
+
+
+# A product of two lognormals
+def function_2D_lognormal(npts,means,sigmas,los,his):
+    pts = []
+    for m,s in zip(means,sigmas):
+        #print m,s
+        pts.append(np.random.lognormal(m,s,npts))
+    pts = np.array(pts)
+    index = pts[0]>los[0]
+    index *= pts[0]<his[0]
+    index *= pts[1]>los[1]
+    index *= pts[1]<his[1]
+    
+    skimmed_pts = [None,None]
+    skimmed_pts[0] = pts[0][index]
+    skimmed_pts[1] = pts[1][index]
+    skimmed_pts = np.array(skimmed_pts)
+
+    return skimmed_pts
+    
+    
+
+
+# Helper function to generate signal and background at the same time
+def gen_sig_and_bkg_lognormal(npts,sigmeans,sigsigmas,bkgmeans,bkgsigmas,los,his):
+    sigpts = function_2D_lognormal(npts[0],sigmeans,sigsigmas,los,his)
+    bkgpts = function_2D_lognormal(npts[1],bkgmeans,bkgsigmas,los,his)
+    data = [sigpts[0].copy(),sigpts[1].copy()]
+    data[0] = np.append(data[0],bkgpts[0])
+    data[1] = np.append(data[1],bkgpts[1])
+    data = np.array(data)
+    return data
+
+
+
+##################################################################
 
 
 # A product of two Gaussians
@@ -162,6 +202,15 @@ def calc_pull_main(iterations, nsig, nbkg, nMC_sig, nMC_bkg, num_bootstrapping_s
     outfile=open(outfile_name,'w')
     print 'writing out to file %s' %outfile_name
     
+    sigmeans = [0.0, 0.0]
+    sigwidths = [0.20, 0.20]
+
+    bkgmeans = [0.0, 0.0]
+    bkgwidths = [0.7, 0.7]
+
+    los = [0,0]
+    his = [100,100]
+    
     pull_frac_list=[]
     average_best_frac = 0
     frac = []
@@ -190,16 +239,27 @@ def calc_pull_main(iterations, nsig, nbkg, nMC_sig, nMC_bkg, num_bootstrapping_s
             
         #generating 2D data
         else:
-            data = gen_sig_and_bkg([nsig_iteration,nbkg_iteration],sigmeans,sigwidths,bkglos,bkghis)
-            signal_MC= signal_2D(nMC_sig,sigmeans,sigwidths)
-            background_MC = background_2D(nMC_bkg,bkglos,bkghis)
+            #2 Gaussian data
+            #data = gen_sig_and_bkg([nsig_iteration,nbkg_iteration],sigmeans,sigwidths,bkglos,bkghis)
+            #signal_MC= signal_2D(nMC_sig,sigmeans,sigwidths)
+            #background_MC = background_2D(nMC_bkg,bkglos,bkghis)
             
+            #2D lognormal data 
+            data = gen_sig_and_bkg_lognormal([nsig_iteration,nbkg_iteration], sigmeans,sigwidths, bkgmeans,bkgwidths,los,his)
+            signal_MC= function_2D_lognormal(nMC_sig,sigmeans,sigwidths,los,his)
+            background_MC = function_2D_lognormal(nMC_bkg,bkgmeans,bkgwidths,los,his)
+        
+        ndata_iteration = len(data[0])
+        nMC_sig = len(signal_MC[0])
+        nMC_bkg = len(background_MC[0])
+        #print ndata_iteration,nMC_sig,nMC_bkg
+        
         #Block count
-        block_ct_sig = int(math.ceil(float(nMC_sig*(nsig_iteration+nbkg_iteration)) / thread_ct))
-        block_ct_bkg = int(math.ceil(float(nMC_bkg*(nsig_iteration+nbkg_iteration)) / thread_ct))
+        block_ct_sig = int(math.ceil(float(nMC_sig*(ndata_iteration)) / thread_ct))
+        block_ct_bkg = int(math.ceil(float(nMC_bkg*(ndata_iteration)) / thread_ct))
         #setting up distances between data points and background MC and data points and signal MC
-        signal_distances_GPU = np.zeros((nsig_iteration+nbkg_iteration)*nMC_sig, dtype = np.float32)
-        background_distances_GPU = np.zeros((nsig_iteration+nbkg_iteration)*nMC_bkg, dtype = np.float32)
+        signal_distances_GPU = np.zeros((ndata_iteration)*nMC_sig, dtype = np.float32)
+        background_distances_GPU = np.zeros((ndata_iteration)*nMC_bkg, dtype = np.float32)
         
         #finding distances and sorting them through the GPU for 1D  
         if dim==1:
@@ -212,8 +272,8 @@ def calc_pull_main(iterations, nsig, nbkg, nMC_sig, nMC_bkg, num_bootstrapping_s
         else:  
             signal_distances=distances_GPU[block_ct_sig, thread_ct](np.float32(data[0]), np.float32(data[1]), len(data[1]), np.float32(signal_MC[0]), np.float32(signal_MC[1]),len(signal_MC[1]), signal_distances_GPU)
             background_distances=distances_GPU[block_ct_bkg, thread_ct](np.float32(data[0]), np.float32(data[1]), len(data[1]), np.float32(background_MC[0]), np.float32(background_MC[1]),len(background_MC[1]), background_distances_GPU)
-            signal_prob=sort_GPU((nsig_iteration+nbkg_iteration),nMC_sig, signal_distances_GPU,nneigh)
-            background_prob=sort_GPU((nsig_iteration+nbkg_iteration),nMC_bkg, background_distances_GPU,nneigh)
+            signal_prob=sort_GPU((ndata_iteration),nMC_sig, signal_distances_GPU,nneigh)
+            background_prob=sort_GPU((ndata_iteration),nMC_bkg, background_distances_GPU,nneigh)
             
         signal_MC_bs = []
         background_MC_bs = []
@@ -250,6 +310,11 @@ def calc_pull_main(iterations, nsig, nbkg, nMC_sig, nMC_bkg, num_bootstrapping_s
         
         def tot_prob(frac,sig,bkg):
             tot_prob = frac*sig/nMC_sig + ((1-frac)*bkg/nMC_bkg)
+            #print frac,tot_prob
+            #print sig
+            #print nMC_sig
+            #print bkg
+            #print nMC_bkg
             return tot_prob
         
         def probability(frac):
@@ -260,7 +325,8 @@ def calc_pull_main(iterations, nsig, nbkg, nMC_sig, nMC_bkg, num_bootstrapping_s
                 nll +=  -np.log(prob[prob>0]).sum()
             return nll
         
-        m1=Minuit(probability,frac= 0.2,limit_frac=(0.001,1),error_frac=0.001,errordef = 0.5*(num_bootstrapping_samples+1), print_level=0)
+        m1=Minuit(probability,frac= 0.2,limit_frac=(0.001,1),error_frac=0.01,errordef = 0.5*(num_bootstrapping_samples+1), print_level=0)
+        
         m1.migrad()
 
         if (m1.get_fmin().is_valid):
