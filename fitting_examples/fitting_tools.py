@@ -381,7 +381,11 @@ def calc_mean_std_of_pulls(values):
 
 
 #Calculates the pulls for the analytic function
-def calc_pull_analytic(iterations, nsig, nMC_sig, nMC_bkg, nneigh,sigwidths):
+def calc_pull_analytic(iterations, nsig, nbkg, nMC_sig, nMC_bkg, num_bootstrapping_samples, nneigh,sigwidths,dim,tag):
+    
+    outfile_name='frac_values_%s_sig%d_bkg%d_MCsig%d_MCbkg%d_bs%d_nn%d_%ddimension.dat'%(tag,nsig,nbkg,nMC_sig,nMC_bkg,num_bootstrapping_samples,nneigh,dim)
+    outfile=open(outfile_name,'w')
+    print 'writing out to file %s' %outfile_name
     
     pull_frac_list=[]
     average_best_frac = 0
@@ -422,8 +426,11 @@ def calc_pull_analytic(iterations, nsig, nMC_sig, nMC_bkg, nneigh,sigwidths):
             fit_frac_uncert.append(err["frac"])
             pull_frac=(frac_org-param["frac"])/err["frac"]
             pull_frac_list.append(pull_frac)
+        output="%f %f %f %d %d %d %d %d %d %d %d %d\n" % (frac_org,param["frac"],err["frac"], nsig,nsig_iteration,nbkg,nbkg_iteration,dim,nMC_sig,nMC_bkg,num_bootstrapping_samples,nneigh)
+        outfile.write(output)
+    outfile.close()
             
-    return pull_frac_list, frac, fit_frac, fit_frac_uncert,iterations
+    return pull_frac_list, frac, fit_frac, fit_frac_uncert,iterations,outfile_name
 
 
 
