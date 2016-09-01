@@ -287,16 +287,15 @@ def calc_pull_main(iterations, nsig, nbkg, nMC_sig, nMC_bkg, num_bootstrapping_s
             signal_MC_bs.append(bootstrapping(signal_MC))
             background_MC_bs.append(bootstrapping(background_MC))
             
-            signal_distances_GPU = np.zeros((nsig_iteration+nbkg_iteration)*nMC_sig, dtype = np.float32)
-            background_distances_GPU = np.zeros((nsig_iteration+nbkg_iteration)*nMC_bkg, dtype = np.float32)
+            signal_distances_GPU = np.zeros((ndata_iteration)*nMC_sig, dtype = np.float32)
+            background_distances_GPU = np.zeros((ndata_iteration)*nMC_bkg, dtype = np.float32)
 
             if dim==1:
             #calculating distances for each point
                 signal_distances=distances_GPU_1D[block_ct_sig, thread_ct](np.float32(data), len(data), np.float32(signal_MC_bs[i]),len(signal_MC_bs[i]), signal_distances_GPU)
                 background_distances=distances_GPU_1D[block_ct_bkg, thread_ct](np.float32(data), len(data), np.float32(background_MC_bs[i]), len(background_MC_bs[i]), background_distances_GPU)
-                signal_prob_bs.append(sort_GPU_1D((nsig_iteration+nbkg_iteration),nMC_sig, np.abs(signal_distances_GPU), nneigh))
-                background_prob_bs.append(sort_GPU_1D((nsig_iteration+nbkg_iteration),nMC_bkg, np.abs(background_distances_GPU), nneigh))
-                 #print signal_prob_bs
+                signal_prob_bs.append(sort_GPU_1D((ndata_iteration),nMC_sig, np.abs(signal_distances_GPU), nneigh))
+                background_prob_bs.append(sort_GPU_1D((ndata_iteration),nMC_bkg, np.abs(background_distances_GPU), nneigh))
             else: 
 
                 signal_distances=distances_GPU[block_ct_sig, thread_ct](np.float32(data[0]), np.float32(data[1]), len(data[1]), np.float32(signal_MC_bs[i][0]), np.float32(signal_MC_bs[i][1]),len(signal_MC_bs[i][1]), signal_distances_GPU)
@@ -304,17 +303,12 @@ def calc_pull_main(iterations, nsig, nbkg, nMC_sig, nMC_bkg, num_bootstrapping_s
                 background_distances=distances_GPU[block_ct_bkg, thread_ct](np.float32(data[0]), np.float32(data[1]), len(data[1]), np.float32(background_MC_bs[i][0]), np.float32(background_MC_bs[i][1]),len(background_MC_bs[i][1]), background_distances_GPU)
            
             
-                signal_prob_bs.append(sort_GPU((nsig_iteration+nbkg_iteration),nMC_sig, signal_distances_GPU,nneigh))
-                background_prob_bs.append(sort_GPU((nsig_iteration+nbkg_iteration),nMC_bkg, background_distances_GPU,nneigh))
+                signal_prob_bs.append(sort_GPU((ndata_iteration),nMC_sig, signal_distances_GPU,nneigh))
+                background_prob_bs.append(sort_GPU((ndata_iteration),nMC_bkg, background_distances_GPU,nneigh))
         
         
         def tot_prob(frac,sig,bkg):
             tot_prob = frac*sig/nMC_sig + ((1-frac)*bkg/nMC_bkg)
-            #print frac,tot_prob
-            #print sig
-            #print nMC_sig
-            #print bkg
-            #print nMC_bkg
             return tot_prob
         
         def probability(frac):
